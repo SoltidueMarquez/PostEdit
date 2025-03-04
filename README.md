@@ -1,6 +1,6 @@
 # PostEdit
 
-> PostEdit is both inversion- and training-free, necessitating approximately 1.5 seconds and 18 GB of GPU memory to generate high-quality results. PostEdit is accepted as a poster in International Conference on Learning Representations (ICLR) 2025!
+> PostEdit is both inversion- and training-free, necessitating approximately 1.5 seconds and 18 GB of GPU memory to generate high-quality results. It is accepted as a poster in International Conference on Learning Representations (ICLR) 2025!
 
 
 ![teaser](docs/intro_Page1.png)
