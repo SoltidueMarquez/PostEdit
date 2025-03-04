@@ -10,7 +10,7 @@
 ## Setup
 
 This code was tested with Python 3.9, [Pytorch](https://pytorch.org/) 2.4.0 using pre-trained models through [huggingface / diffusers](https://github.com/huggingface/diffusers#readme).
-Specifically, we implemented our method over  [Latent Diffusion] LCM.
+Specifically, we implemented our method over [LCM](https://arxiv.org/pdf/2310.04378).
 Additional required packages are listed in the requirements file.
 The code was tested on a single NVIDIA A100 GPU.
 
