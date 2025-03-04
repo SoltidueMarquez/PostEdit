@@ -4,6 +4,7 @@
 
 
 ![exp](exp.png)
+![detail](detail.png)
 [Paper](https://arxiv.org/pdf/2410.04844)
 
 
