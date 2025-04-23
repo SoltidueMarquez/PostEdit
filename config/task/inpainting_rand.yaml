@@ -1,0 +1,13 @@
+lgvd_config:
+  num_steps: 25000
+  lr: 1e-5
+  tau: 0.01
+  lr_min_ratio: 0.01
+
+
+operator:
+  name: inpainting
+  mask_type: random
+  mask_prob_range: [0.00, 0.01]  # for random
+  resolution: 64
+  sigma: 0.05
