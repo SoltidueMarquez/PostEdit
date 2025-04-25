@@ -57,20 +57,8 @@ python main.py
                   Yanhao Ge and
                   Xiaokang Yang},
   title        = {PostEdit: Posterior Sampling for Efficient Zero-Shot Image Editing},
-  journal      = {CoRR},
-  volume       = {abs/2410.04844},
+  journal      = {ICLR},
   year         = {2024},
-  url          = {https://doi.org/10.48550/arXiv.2410.04844},
-  doi          = {10.48550/ARXIV.2410.04844},
-  eprinttype    = {arXiv},
-  eprint       = {2410.04844},
-  timestamp    = {Tue, 12 Nov 2024 18:39:25 +0100},
-
-
-
-
-  biburl       = {https://dblp.org/rec/journals/corr/abs-2410-04844.bib},
-  bibsource    = {dblp computer science bibliography, https://dblp.org}
 }
 ```
 
