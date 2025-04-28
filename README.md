@@ -58,7 +58,7 @@ python main.py
                   Xiaokang Yang},
   title        = {PostEdit: Posterior Sampling for Efficient Zero-Shot Image Editing},
   journal      = {ICLR},
-  year         = {2024},
+  year         = {2025},
 }
 ```
 
