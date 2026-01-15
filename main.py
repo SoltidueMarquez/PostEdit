@@ -718,6 +718,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PostEdit 图像编辑脚本")
     parser.add_argument('--path_to_prompts', type=str, default='benchmarks/instructions/editing_pie_bench_700.csv', help='测试集提示词 CSV 文件路径')
     parser.add_argument('--path_to_images', type=str, default='benchmarks/images/pie_bench_700_images', help='测试集图像目录路径')
+    parser.add_argument('--path_to_recon', type=str, default='results/recon/', help='重构结果保存路径')
+    parser.add_argument('--path_to_editted', type=str, default='results/editted/', help='编辑结果保存路径')
     parser.add_argument('--single_image', action='store_true', help='是否仅运行单张图像测试（示例功能，可根据需要扩展逻辑）')
     args = parser.parse_args()
 
@@ -740,8 +742,10 @@ if __name__ == "__main__":
     editing_benchmark = load_benchmark(path_to_prompts, path_to_images)
 
     """ 4. 创建结果保存目录 """
-    os.makedirs('results/editted/', exist_ok=True) # 编辑后的图像
-    os.makedirs('results/recon/', exist_ok=True)   # 重构出的原图（用于比对）
+    path_to_recon = args.path_to_recon
+    path_to_editted = args.path_to_editted
+    os.makedirs(path_to_editted, exist_ok=True) # 编辑后的图像
+    os.makedirs(path_to_recon, exist_ok=True)   # 重构出的原图（用于比对）
 
     # 遍历数据集进行实验
     print("开始遍历数据集进行实验:")
@@ -793,19 +797,19 @@ if __name__ == "__main__":
             # 保存重构的原图（验证反演准确度）
             image = null_inversion.latent2image(samples[0].unsqueeze(0))
             full_samples_rec.append(image)
-            Image.fromarray(image).save('results/recon/' + str(index) + '_' + str(r) + '.png')
+            Image.fromarray(image).save(os.path.join(path_to_recon, str(index) + '_' + str(r) + '.png'))
             
             # 保存编辑后的图像
             image = null_inversion.latent2image(samples[1].unsqueeze(0))
             full_samples.append(image)
-            Image.fromarray(image).save('results/editted/' + str(index) + '_' + str(r) + '.png')
+            Image.fromarray(image).save(os.path.join(path_to_editted, str(index) + '_' + str(r) + '.png'))
 
         # 将多次运行的结果拼接并保存，方便对比
         print(f"[{index}] 将多次运行的结果拼接并保存...")
         full_samples = np.concatenate(full_samples, 1)
-        Image.fromarray(full_samples).save('results/editted/' + str(index) + '.png')
+        Image.fromarray(full_samples).save(os.path.join(path_to_editted, str(index) + '.png'))
 
         full_samples_rec = np.concatenate(full_samples_rec, 1)
-        Image.fromarray(full_samples_rec).save('results/recon/' + str(index) + '.png')
+        Image.fromarray(full_samples_rec).save(os.path.join(path_to_recon, str(index) + '.png'))
 
         

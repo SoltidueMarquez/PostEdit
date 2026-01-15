@@ -12,8 +12,10 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "--path_to_prompts", "benchmarks/instructions/editing_pie_bench_700.csv",
-                "--path_to_images", "benchmarks/images/pie_bench_700_images"
+                "--path_to_prompts", "benchmarks/multi test/instructions/editing_pie_bench_700.csv",
+                "--path_to_images", "benchmarks/multi test",
+                "--path_to_recon", "results/multi edit/recon/",
+                "--path_to_editted", "results/multi edit/editted/"
             ]
         },
         {
@@ -26,7 +28,9 @@
             "args": [
                 "--single_image",
                 "--path_to_prompts", "benchmarks/instructions/editing_pie_bench_700.csv",
-                "--path_to_images", "benchmarks/test"
+                "--path_to_images", "benchmarks/test",
+                "--path_to_recon", "results/recon/",
+                "--path_to_editted", "results/editted/"
             ]
         }
     ]
