@@ -397,7 +397,6 @@ class HighDynamicRange(Operator):
     def __call__(self, data):
         return torch.clip((data * self.scale), -1, 1)
 
-
 # Non-linear Operator
 @register_operator(name='phase_retrieval')
 class PhaseRetrieval(Operator):

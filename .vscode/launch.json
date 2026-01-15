@@ -10,7 +10,11 @@
             "request": "launch",
             "program": "./main.py",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "args": [
+                "--path_to_prompts", "benchmarks/instructions/editing_pie_bench_700.csv",
+                "--path_to_images", "benchmarks/images/pie_bench_700_images"
+            ]
         },
         {
             "name": "Python: PostEdit (Single Image Editing)",
@@ -20,7 +24,9 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "--single_image"
+                "--single_image",
+                "--path_to_prompts", "benchmarks/instructions/editing_pie_bench_700.csv",
+                "--path_to_images", "benchmarks/test"
             ]
         }
     ]

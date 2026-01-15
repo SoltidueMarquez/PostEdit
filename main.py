@@ -14,6 +14,7 @@ import abc
 import seq_aligner
 import pandas as pd
 from nltk.corpus import stopwords
+import argparse
 
 
 # 全局常量配置
@@ -417,7 +418,8 @@ class LangevinDynamics(nn.Module):
         sigma: 当前噪声水平
         """
         num_steps = self.num_steps if steps is None else steps
-        pbar = tqdm.trange(num_steps) if verbose else range(num_steps)
+        print("根据算子（operator）和测量值（measurement）优化潜变量:")
+        pbar = tqdm(range(num_steps), desc="      Langevin Optim", leave=False) if verbose else range(num_steps)
         lr = self.get_lr(ratio)
         x = x0hat.clone().detach().requires_grad_(True)
         optimizer = torch.optim.SGD([x], lr)
@@ -469,10 +471,12 @@ class NullInversion:
     def prev_step(self, timestep, sample, operator, measurement, annel_interval=100, w = 0.25):
         """采样循环中的前一步处理，结合了郎之万优化"""
         num_steps = int((timestep - 1) / annel_interval)
-        for step in range(num_steps):
+        print("根据DDIM采样循环预测潜变量:")
+        step_pbar = tqdm(range(num_steps), desc="    Diffusion Steps", leave=False)
+        for step in step_pbar:
             pred_original_sample = self.sampler_one_step(timestep, sample, guidance=4.0)
             # 使用郎之万动力学优化预测的 x0
-            pred_x0 = self.lgvd.sample(pred_original_sample, operator, measurement, (1 - self.scheduler.alphas_cumprod[timestep]) ** 0.5, step / num_steps)
+            pred_x0 = self.lgvd.sample(pred_original_sample, operator, measurement, (1 - self.scheduler.alphas_cumprod[timestep]) ** 0.5, step / num_steps, verbose=True)
             timestep = timestep - annel_interval
             # 混合优化后的结果与原始图像的潜变量
             sample = self.get_start((1 - w) * pred_x0 + w * latent_gt, timestep)
@@ -710,6 +714,13 @@ def find_difference2(word1, word2):
 
 
 if __name__ == "__main__":
+    """ 0. 解析命令行参数 """
+    parser = argparse.ArgumentParser(description="PostEdit 图像编辑脚本")
+    parser.add_argument('--path_to_prompts', type=str, default='benchmarks/instructions/editing_pie_bench_700.csv', help='测试集提示词 CSV 文件路径')
+    parser.add_argument('--path_to_images', type=str, default='benchmarks/images/pie_bench_700_images', help='测试集图像目录路径')
+    parser.add_argument('--single_image', action='store_true', help='是否仅运行单张图像测试（示例功能，可根据需要扩展逻辑）')
+    args = parser.parse_args()
+
     """ 1. 基础模型加载 """
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
     # 使用 LCM 模型，支持极速生成（少量步数即可获得高质量结果）
@@ -724,8 +735,8 @@ if __name__ == "__main__":
     null_inversion = NullInversion(ldm_stable, lgvd_config)
 
     """ 3. 加载测试数据集 (PIE-Bench) """
-    path_to_prompts = 'benchmarks/instructions/editing_pie_bench_700.csv'
-    path_to_images = 'benchmarks/images/pie_bench_700_images'
+    path_to_prompts = args.path_to_prompts
+    path_to_images = args.path_to_images
     editing_benchmark = load_benchmark(path_to_prompts, path_to_images)
 
     """ 4. 创建结果保存目录 """
@@ -733,9 +744,15 @@ if __name__ == "__main__":
     os.makedirs('results/recon/', exist_ok=True)   # 重构出的原图（用于比对）
 
     # 遍历数据集进行实验
-    for index, (image_path, prompts_dict, blended_words) in enumerate(tqdm(editing_benchmark)):
+    print("开始遍历数据集进行实验:")
+    pbar = tqdm(editing_benchmark)
+    for index, (image_path, prompts_dict, blended_words) in enumerate(pbar):
+        image_name = os.path.basename(image_path)
+        print(f"处理图像: {image_name}")
+        pbar.set_description(f"Processing {image_name}")
      
         """ 5. 图像预处理与编码 """
+        print(f"\n[{index}] 图像预处理与编码: {image_path}")
         offsets=(0,0,0,0)
         images = load_512(image_path, *offsets)
         # 将原始图像通过 VAE 编码到潜空间
@@ -749,12 +766,14 @@ if __name__ == "__main__":
         """ 6. 提示词处理 """
         # 获取编辑前后的提示词
         prompts = [prompts_dict['before'], prompts_dict['after']]
+        print(f"[{index}] 提示词: Before='{prompts[0]}', After='{prompts[1]}'")
         null_inversion.init_prompt(prompts)
     
         """ 7. 获取测量算子（如退化操作） """
         task_operator = config_lgvd.get('operator')  
         operator = get_operator(**task_operator)
         # 对原始潜变量执行测量操作
+        print(f"[{index}] 对原始潜变量执行测量操作: {task_operator.get('name', 'unknown')}")
         y = operator.measure(latent)
         latent_gt = latent
 
@@ -762,10 +781,13 @@ if __name__ == "__main__":
         starting_timestep = 501 # 扩散步的起点
         num_runs = 5            # 对同一张图进行多次生成以观察稳定性
 
-        for r in range(num_runs):
+        print(f"[{index}] 执行编辑与重构循环: {num_runs}次")
+        run_pbar = tqdm(range(num_runs), desc=f"  Runs", leave=False)
+        for r in run_pbar:
             # 获取带噪声的潜变量起点
             latent_t = null_inversion.get_start(latent, starting_timestep=starting_timestep, double=True)
             # 执行带有郎之万优化和注意力控制的采样
+            # print(f"  Run {r+1}/{num_runs}: Sampling...")
             samples = null_inversion.sample_in_batch(latent_t, operator, y, starting_timestep=starting_timestep)
             
             # 保存重构的原图（验证反演准确度）
@@ -779,6 +801,7 @@ if __name__ == "__main__":
             Image.fromarray(image).save('results/editted/' + str(index) + '_' + str(r) + '.png')
 
         # 将多次运行的结果拼接并保存，方便对比
+        print(f"[{index}] 将多次运行的结果拼接并保存...")
         full_samples = np.concatenate(full_samples, 1)
         Image.fromarray(full_samples).save('results/editted/' + str(index) + '.png')
 
