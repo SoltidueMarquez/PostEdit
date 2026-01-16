@@ -604,16 +604,31 @@ class NullInversion:
 
     @torch.no_grad()
     def image2latent(self, image):
-        """图像编码为潜变量"""
+        """
+        将像素空间的图像编码为潜空间（Latent Space）的潜变量。
+        这是扩散模型处理图像的第一步，将 512x512 的 RGB 图像压缩为 64x64 的特征图。
+        """
         with torch.no_grad():
+            # 1. 格式转换：如果是 PIL Image 对象，先转换为 numpy 数组
             if type(image) is Image:
                 image = np.array(image)
+            
+            # 2. 如果输入已经是 4 维张量 [B, C, H, W]，则直接使用
             if type(image) is torch.Tensor and image.dim() == 4:
                 latents = image
             else:
+                # 3. 数据预处理：
+                # 将像素值从 [0, 255] 归一化到 [-1, 1]（SD 模型要求的输入范围）
                 image = torch.from_numpy(image).float() / 127.5 - 1
+                # 调整维度顺序：从 [H, W, C] 变为 [C, H, W]，并增加 Batch 维度变为 [1, C, H, W]
                 image = image.permute(2, 0, 1).unsqueeze(0).to(device)
+                
+                # 4. VAE 编码：
+                # 使用预训练的 VAE 编码器将图像压缩到潜空间，取分布的均值作为结果
                 latents = self.model.vae.encode(image)['latent_dist'].mean
+                
+                # 5. 缩放处理：
+                # 乘以缩放系数 0.18215。这是 Stable Diffusion 官方为了让潜变量的方差接近 1 而使用的标准系数。
                 latents = latents * 0.18215
         return latents
 
@@ -676,7 +691,7 @@ def load_benchmark(path_to_prompts,
     path_to_images: 图像目录路径（如果为编辑任务）
     """
     files = pd.read_csv(path_to_prompts)
-    if path_to_images is None:
+    if path_to_images is None: # 这个没用了
         # 纯生成任务
         print(f'Generation benchmark: Loading from {path_to_prompts}')
         prompts = list(files['caption'])
@@ -714,7 +729,7 @@ def find_difference2(word1, word2):
 
 
 if __name__ == "__main__":
-    """ 0. 解析命令行参数 """
+    # region 0. 解析命令行参数，这个是我加的
     parser = argparse.ArgumentParser(description="PostEdit 图像编辑脚本")
     parser.add_argument('--path_to_prompts', type=str, default='benchmarks/instructions/editing_pie_bench_700.csv', help='测试集提示词 CSV 文件路径')
     parser.add_argument('--path_to_images', type=str, default='benchmarks/images/pie_bench_700_images', help='测试集图像目录路径')
@@ -722,30 +737,42 @@ if __name__ == "__main__":
     parser.add_argument('--path_to_editted', type=str, default='results/editted/', help='编辑结果保存路径')
     parser.add_argument('--single_image', action='store_true', help='是否仅运行单张图像测试（示例功能，可根据需要扩展逻辑）')
     args = parser.parse_args()
+    # endregion
 
-    """ 1. 基础模型加载 """
+    # region 1. 基础模型加载
+    """ 初始化计算设备并加载预训练的 LCM 扩散模型及其文本分词器，为后续的图像生成与编辑提供核心引擎 """
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
     # 使用 LCM 模型，支持极速生成（少量步数即可获得高质量结果）
+    # ldm_stable 是来自 diffusers 库的 StableDiffusionPipeline 实例。具体模型是 LCM (Latent Consistency Model) 的一个变体（LCM_Dreamshaper_v7）。
     ldm_stable = StableDiffusionPipeline.from_pretrained("SimianLuo/LCM_Dreamshaper_v7").to(device)
+    # tokenizer是 CLIP 模型的文本分词器（Tokenizer）
     tokenizer = ldm_stable.tokenizer
+    # endregion
 
-    """ 2. 加载配置文件 """
+    # region 2. 加载配置文件
+    """设置要做一个随机遮盖 50% 区域的图像补全任务，并且在编辑时使用郎之万优化算法运行 200 步来保证画面的质量和一致性。"""
     with open('./config/task/inpainting_rand.yaml', 'r') as f:
         config_lgvd = yaml.safe_load(f)
-    lgvd_config = config_lgvd.get('lgvd_config')
+    lgvd_config = config_lgvd.get('lgvd_config') # num_steps: 200 # 优化迭代的步数。
+                                                 # lr: 1e-5 # 学习率。
+                                                 # tau: 0.01 # 噪声项系数。
+                                                 # lr_min_ratio: 0.01 # 最小学习率与最大学习率之比。
     # 初始化 NullInversion 核心组件
     null_inversion = NullInversion(ldm_stable, lgvd_config)
+    # endregion
 
-    """ 3. 加载测试数据集 (PIE-Bench) """
+    # region 3. 加载测试数据集 (PIE-Bench)
     path_to_prompts = args.path_to_prompts
     path_to_images = args.path_to_images
     editing_benchmark = load_benchmark(path_to_prompts, path_to_images)
+    # endregion
 
-    """ 4. 创建结果保存目录 """
+    # region 4. 创建结果保存目录
     path_to_recon = args.path_to_recon
     path_to_editted = args.path_to_editted
     os.makedirs(path_to_editted, exist_ok=True) # 编辑后的图像
     os.makedirs(path_to_recon, exist_ok=True)   # 重构出的原图（用于比对）
+    # endregion
 
     # 遍历数据集进行实验
     print("开始遍历数据集进行实验:")
@@ -755,17 +782,20 @@ if __name__ == "__main__":
         print(f"处理图像: {image_name}")
         pbar.set_description(f"Processing {image_name}")
      
-        """ 5. 图像预处理与编码 """
+        # region 5. 图像预处理与编码
         print(f"\n[{index}] 图像预处理与编码: {image_path}")
         offsets=(0,0,0,0)
-        images = load_512(image_path, *offsets)
+        images = load_512(image_path, *offsets) # 这边因为offset是0，所以没有切割，直接是缩放到了512*512
+        # print(f"images shape: {images.shape}")
         # 将原始图像通过 VAE 编码到潜空间
         latent = null_inversion.image2latent(images)
+        print(f"latent shape: {latent.shape}")
         full_samples= []
         full_samples.append(images) # 存入原始图像作为对比
 
         full_samples_rec= []
         full_samples_rec.append(images) 
+        # endregion
 
         """ 6. 提示词处理 """
         # 获取编辑前后的提示词
