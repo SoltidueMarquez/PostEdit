@@ -461,25 +461,56 @@ class NullInversion:
         self.lgvd = LangevinDynamics(**lgvd_config)
 
     def get_start(self, ref, starting_timestep=999, double=False):
-        """根据参考图像添加指定步数的噪声作为采样起点"""
+        """
+        根据参考图像（潜变量）添加指定步数的噪声，生成去噪过程的初始起点。
+        """
+        # 1. 如果 double 为 True，则将参考潜变量在 Batch 维度复制一份。
+        # 这样可以同时并行处理两个分支：一个是保持原样的重构分支，一个是进行修改的编辑分支。
         if double: ref = torch.cat([ref] * 2) # [original, editted]
+        
+        # 2. 生成与潜变量形状完全一致的标准正态分布噪声
         noise = torch.randn(ref.shape).to(device)
+        
+        # 3. 确定起始的时间步（Timestep）
         timestep = torch.tensor(starting_timestep)
+        
+        # 4. 调用扩散模型的调度器（Scheduler）执行“前向加噪”：
+        # 根据公式 x_t = sqrt(alpha_t)*x_0 + sqrt(1-alpha_t)*noise，
+        # 将干净的潜变量 ref 混合噪声，得到第 T 步时的模糊状态 x_start。
         x_start = self.model.scheduler.add_noise(ref, noise, timestep)
+        
         return x_start
     
     def prev_step(self, timestep, sample, operator, measurement, annel_interval=100, w = 0.25):
-        """采样循环中的前一步处理，结合了郎之万优化"""
+        """
+        在采样循环中执行反向步处理，并结合郎之万动力学（Langevin Dynamics）进行迭代优化。
+        这是 PostEdit 的核心，用于在去噪过程中强制让生成结果符合测量值（y）。
+        """
+        # 1. 计算总的迭代步数
         num_steps = int((timestep - 1) / annel_interval)
-        print("根据DDIM采样循环预测潜变量:")
+        print("根据 DDIM 采样循环预测潜变量:")
+        
+        # 使用进度条显示扩散步的进度
         step_pbar = tqdm(range(num_steps), desc="    Diffusion Steps", leave=False)
         for step in step_pbar:
+            # 2. 预测去噪后的原始图像 (x0)
+            # 通过当前的采样状态 sample 预测出对应的干净潜变量 pred_original_sample
             pred_original_sample = self.sampler_one_step(timestep, sample, guidance=4.0)
-            # 使用郎之万动力学优化预测的 x0
+            
+            # 3. 郎之万动力学优化
+            # 调用 LGVD 模块，对预测出的 x0 进行优化。
+            # 使其既接近模型预测的结果，又能够通过 operator 满足测量值 measurement。
+            # (1 - alpha_t)^0.5 是当前的噪声水平，作为优化的约束强度之一
             pred_x0 = self.lgvd.sample(pred_original_sample, operator, measurement, (1 - self.scheduler.alphas_cumprod[timestep]) ** 0.5, step / num_steps, verbose=True)
+            
+            # 4. 时间步递减
             timestep = timestep - annel_interval
-            # 混合优化后的结果与原始图像的潜变量
+            
+            # 5. 混合与重新加噪
+            # 将优化后的结果与原始图像的潜变量 (latent_gt) 按比例 w 进行混合，以增强保真度。
+            # 然后调用 get_start 重新加上噪声，得到下一个时间步的采样状态 sample。
             sample = self.get_start((1 - w) * pred_x0 + w * latent_gt, timestep)
+            
         return pred_original_sample
         
     
@@ -511,17 +542,32 @@ class NullInversion:
         return pred_original_sample
     
     def sampler_one_step(self, timestep, latents, guidance=GUIDANCE_SCALE):
-        """单步采样：从 x_t 预测 x_0 的估计值"""
-        """ Predict noise with CFG """
+        """
+        单步采样：从当前的噪声状态 x_t 预测最清晰的原始图像估计值 x_0。
+        这一步是扩散模型的核心推理过程。
+        """
+        # 1. 准备 CFG（分类器自由引导）的输入
+        # 将潜变量复制一份，以便同时计算“无条件”和“有条件”的噪声预测
         latent_model_input = torch.cat([latents] * 2)
-        # with torch.no_grad(): 
+        
+        # 2. 调用 U-Net 预测噪声
+        # 根据当前的潜变量、时间步和提示词上下文（context）预测图中包含的噪声
         noise_pred = self.model.unet(latent_model_input, timestep, encoder_hidden_states=self.context)["sample"]
+        
+        # 3. 执行 CFG 混合
+        # 将预测出的噪声分为两部分：无提示词指导的噪声和有提示词指导的噪声
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        # 按照公式混合，通过 guidance 放大提示词的影响力，让结果更符合文本描述
         noise_pred = noise_pred_uncond + guidance * (noise_pred_text - noise_pred_uncond)
 
-        """ Compute the previous noisy sample x_t -> x_t-1 """
+        # 4. 计算推断出的原始图像 x_0
+        # 获取当前时间步的 alpha 累积乘积（代表图像中保留原图信息的比例）
         alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
+        # 计算 beta 累积乘积（代表图像中噪声的比例）
         beta_prod_t = 1 - alpha_prod_t
+        
+        # 应用扩散模型的基础公式：x_0 = (x_t - sqrt(1 - alpha_t) * epsilon) / sqrt(alpha_t)
+        # 这一步尝试从乱码中“猜出”最底层的清晰图像
         pred_original_sample = (latents - beta_prod_t ** (0.5) * noise_pred) / alpha_prod_t ** (0.5)
 
         return pred_original_sample
@@ -634,14 +680,30 @@ class NullInversion:
 
     @torch.no_grad()
     def init_prompt(self, prompt: str):
-        """初始化提示词编码"""
+        # print(f"prompt: {prompt}")
+        """
+        初始化提示词编码。将文本提示词转换为模型可理解的向量嵌入（Embeddings）。
+        此过程会同时生成“有条件”和“无条件（空文本）”的向量，用于后续的分类器自由引导（CFG）。
+        """
+        # 1. 准备无条件（Negative/Unconditional）输入：
+        # 创建一个与 prompt 长度相同的空字符串列表，模拟“不提供任何描述”的情况
         uncond_input = self.model.tokenizer(
-            [""]  * len(prompt), padding="max_length", 
+            [""]  * len(prompt),  # 结果就是 ["", ""]
+            padding="max_length", # 填充到最大长度（通常是 77）
             max_length=self.model.tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt"
+            truncation=True, # 超出部分截断
+            return_tensors="pt" # 返回 PyTorch 张量
         )
+        # uncond_input 是一个字典对象，包含 'input_ids' 和 'attention_mask'
+        # 它本身没有 .shape 属性，需要访问其中的张量
+        # print(f"uncond_input input_ids shape: {uncond_input.input_ids.shape}")
+        # print(f"uncond_input attention_mask shape: {uncond_input.attention_mask.shape}")
+        # 将空文本的 Token ID 传给文本编码器，获取“无条件嵌入”
         uncond_embeddings = self.model.text_encoder(uncond_input.input_ids.to(self.model.device))[0]
+        # print(f"uncond_embeddings: {uncond_embeddings.shape}")
+
+        # 2. 准备有条件（Conditional/Text）输入：
+        # 将实际的提示词（如 "a cake on the desk"）进行分词
         text_input = self.model.tokenizer(
             prompt,
             padding="max_length",
@@ -649,9 +711,16 @@ class NullInversion:
             truncation=True,
             return_tensors="pt",
         )
+        # print(f"text_input input_ids shape: {text_input.input_ids.shape}")
+        # print(f"text_input attention_mask shape: {text_input.attention_mask.shape}")
+        # 将提示词的 Token ID 传给文本编码器，获取“有条件嵌入”
         text_embeddings = self.model.text_encoder(text_input.input_ids.to(self.model.device))[0]
-        # 保存 [无条件嵌入, 有条件嵌入] 供后续 CFG 使用
+        # print(f"text_embeddings: {text_embeddings.shape}")
+        # 3. 拼接上下文：
+        # 将无条件嵌入和有条件嵌入在第 0 维（Batch 维度）拼接起来。
+        # 拼接后的 self.context 形状通常为 [2*Batch, 77, 768]，供模型同时推理两者的结果
         self.context = torch.cat([uncond_embeddings, text_embeddings])
+        # print(f"self.context: {self.context.shape}")
         self.prompt = prompt
 
     @property
@@ -789,7 +858,7 @@ if __name__ == "__main__":
         # print(f"images shape: {images.shape}")
         # 将原始图像通过 VAE 编码到潜空间
         latent = null_inversion.image2latent(images)
-        print(f"latent shape: {latent.shape}")
+        # print(f"latent shape: {latent.shape}")
         full_samples= []
         full_samples.append(images) # 存入原始图像作为对比
 
@@ -797,19 +866,22 @@ if __name__ == "__main__":
         full_samples_rec.append(images) 
         # endregion
 
-        """ 6. 提示词处理 """
+        # region 6. 提示词处理
         # 获取编辑前后的提示词
         prompts = [prompts_dict['before'], prompts_dict['after']]
         print(f"[{index}] 提示词: Before='{prompts[0]}', After='{prompts[1]}'")
         null_inversion.init_prompt(prompts)
-    
-        """ 7. 获取测量算子（如退化操作） """
+        # endregion
+
+        # region 7. 获取测量算子（如退化操作）
         task_operator = config_lgvd.get('operator')  
         operator = get_operator(**task_operator)
         # 对原始潜变量执行测量操作
         print(f"[{index}] 对原始潜变量执行测量操作: {task_operator.get('name', 'unknown')}")
         y = operator.measure(latent)
         latent_gt = latent
+        # print(f"y: {y.shape}")
+        # endregion
 
         """ 8. 执行编辑与重构循环 """
         starting_timestep = 501 # 扩散步的起点
@@ -821,8 +893,8 @@ if __name__ == "__main__":
             # 获取带噪声的潜变量起点
             latent_t = null_inversion.get_start(latent, starting_timestep=starting_timestep, double=True)
             # 执行带有郎之万优化和注意力控制的采样
-            # print(f"  Run {r+1}/{num_runs}: Sampling...")
             samples = null_inversion.sample_in_batch(latent_t, operator, y, starting_timestep=starting_timestep)
+            print(f"samples shape: {samples.shape}")
             
             # 保存重构的原图（验证反演准确度）
             image = null_inversion.latent2image(samples[0].unsqueeze(0))

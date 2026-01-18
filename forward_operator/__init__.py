@@ -66,7 +66,9 @@ class Operator(ABC):
         pass
 
     def measure(self, x):
-        y0 = self(x)
+        # 1. 这里调用了 self(x)，也就是 Inpainting 类的 __call__
+        y0 = self(x) 
+        # 2. 在损坏后的图像上，再叠加上一丁点随机噪声，模拟真实的传感器测量误差
         return y0 + self.sigma * torch.randn_like(y0)
 
     def error(self, x, y):
@@ -168,11 +170,19 @@ class mask_generator:
     def __init__(self, mask_type, mask_len_range=None, mask_prob_range=None,
                  image_size=256, margin=(32, 32)):
         """
-        (mask_len_range): given in (min, max) tuple.
-        Specifies the range of box size in each dimension
-        (mask_prob_range): for the case of random masking,
-        specify the probability of individual pixels being masked
+        初始化遮罩生成器。
+
+        参数说明:
+            mask_type: 遮罩类型，可选 ['box', 'random', 'both', 'extreme']。
+                       - 'box': 矩形块遮罩。
+                       - 'random': 随机像素遮罩。
+                       - 'extreme': 反向矩形块遮罩（保留块内，遮盖块外）。
+            mask_len_range: 矩形块长度的范围 (min, max)，用于 'box' 模式。
+            mask_prob_range: 像素被遮盖的概率范围 (min, max)，用于 'random' 模式。
+            image_size: 图像的分辨率（如 64 或 256）。
+            margin: 遮罩距离图像边缘的最小边距 (height_margin, width_margin)。
         """
+        # 确保传入的遮罩类型是支持的几种之一
         assert mask_type in ['box', 'random', 'both', 'extreme']
         self.mask_type = mask_type
         self.mask_len_range = mask_len_range
@@ -192,16 +202,35 @@ class mask_generator:
         return mask, t, tl, w, wh
 
     def _retrieve_random(self, img):
+        """
+        生成随机像素遮罩。
+        随机选择图像中的一部分像素点进行遮盖（设为 0），其余保持不变（设为 1）。
+        """
+        # print(f"img: {img.shape}")
+        # 1. 计算总像素点数量
         total = self.image_size ** 2
-        # random pixel sampling
+        # 2. 随机确定本次遮盖的比例（从配置的概率范围内随机选一个值）
         l, h = self.mask_prob_range
         prob = np.random.uniform(l, h)
+        # 3. 初始化全 1 的一维向量（代表初始状态全不遮挡）
         mask_vec = torch.ones([1, self.image_size * self.image_size])
+        # 4. 随机抽取需要被遮盖的像素索引位置
+        # 从 total 个位置中不重复地抽取 total * prob 个点
         samples = np.random.choice(self.image_size * self.image_size, int(total * prob), replace=False)
+        # 5. 将抽中的位置设为 0（即执行遮盖操作）
         mask_vec[:, samples] = 0
+        # print(f"mask_vec: {mask_vec.shape}")
+        # 6. 将一维向量重新变形回二维图像形状 [1, H, W]
         mask_b = mask_vec.view(1, self.image_size, self.image_size)
+        # print(f"mask_b: {mask_b.shape}")
+        # 7. 在通道维度上进行重复。
+        # 注意：这里是 4 个通道，因为 Stable Diffusion 的潜变量（Latent）是 4 通道的
         mask_b = mask_b.repeat(4, 1, 1)
+        # print(f"mask_b_repeat: {mask_b.shape}")
+        # 8. 创建一个与输入图像 img 形状完全相同的全 1 掩码
         mask = torch.ones_like(img, device=img.device)
+        # print(f"mask: {mask.shape}")
+        # 9. 将生成的随机掩码赋值给 mask 变量
         mask[:, ...] = mask_b
         return mask
 
@@ -222,14 +251,35 @@ class mask_generator:
 class Inpainting(Operator):
     def __init__(self, mask_type, mask_len_range=None, mask_prob_range=None, resolution=256, device='cuda',
                  sigma=0.05):
+        """
+        初始化图像补全（Inpainting）算子。
+        
+        参数:
+            mask_type: 遮罩类型（'box', 'random', 'extreme' 等）
+            mask_len_range: 遮罩长度范围（用于 box 模式）
+            mask_prob_range: 遮罩概率范围（用于 random 模式）
+            resolution: 处理分辨率（通常是 64 或 256）
+            device: 计算设备
+            sigma: 测量噪声的标准差
+        """
         super().__init__(sigma)
+        # 初始化遮罩生成器
         self.mask_gen = mask_generator(mask_type, mask_len_range, mask_prob_range, resolution)
-        self.mask = None  # [B, 1, H, W]
+        # 存储生成的遮罩，确保在一次编辑过程中遮罩是固定的
+        self.mask = None  # 形状为 [B, 1, H, W]
 
     def __call__(self, x):
+        """
+        对输入图像执行遮罩操作。
+        如果遮罩尚未生成，则生成一个新的遮罩并固定下来。
+        """
         if self.mask is None:
+            # 生成遮罩
             self.mask = self.mask_gen(x)
+            # 仅保留 Batch 0 且仅取单通道（1, 1, H, W），以便广播到所有通道
             self.mask = self.mask[0:1, 0:1, :, :]
+        
+        # 返回被遮盖后的图像（x 乘以 0/1 矩阵）
         return x * self.mask
 
 
